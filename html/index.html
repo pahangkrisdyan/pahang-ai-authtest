@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keycloak OIDC - Vanilla JavaScript Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #764ba2;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .status.authenticated {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.unauthenticated {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .token-display {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .user-info {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .user-info h3 {
+            margin-top: 0;
+            color: #0056b3;
+        }
+        .user-info pre {
+            background: white;
+            padding: 10px;
+            border-radius: 3px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Keycloak OIDC Authentication Example</h1>
+        
+        <div id="status" class="status unauthenticated">
+            Status: Not authenticated
+        </div>
+
+        <div class="button-group">
+            <button id="loginBtn" onclick="login()">Login with Keycloak</button>
+            <button id="logoutBtn" onclick="logout()" disabled>Logout</button>
+            <button id="refreshBtn" onclick="refreshToken()" disabled>Refresh Token</button>
+            <button id="userInfoBtn" onclick="getUserInfo()" disabled>Get User Info</button>
+        </div>
+
+        <div id="userInfo" class="user-info" style="display: none;">
+            <h3>User Information</h3>
+            <pre id="userInfoContent"></pre>
+        </div>
+
+        <div id="tokens" style="display: none;">
+            <h3>Access Token</h3>
+            <div id="accessToken" class="token-display"></div>
+            
+            <h3>ID Token</h3>
+            <div id="idToken" class="token-display"></div>
+
+            <h3>Decoded Token</h3>
+            <pre id="decodedToken" class="token-display"></pre>
+        </div>
+    </div>
+
+    <script>
+        // Keycloak configuration
+        const keycloakConfig = {
+            realm: 'pahang.ai',
+            authServerUrl: 'https://iam.pahang.ai/',
+            clientId: 'pahang.ai',
+            redirectUri: 'https://authtest.pahang.ai/examples/javascript-vanilla/',
+            responseType: 'code',
+            scope: 'openid profile email'
+        };
+
+        // Token storage
+        let tokens = {
+            accessToken: null,
+            idToken: null,
+            refreshToken: null
+        };
+
+        // Generate random string for PKCE
+        function generateRandomString(length) {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+            let result = '';
+            for (let i = 0; i < length; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        }
+
+        // Generate PKCE challenge
+        async function generatePKCEChallenge() {
+            const verifier = generateRandomString(128);
+            const encoder = new TextEncoder();
+            const data = encoder.encode(verifier);
+            const hash = await crypto.subtle.digest('SHA-256', data);
+            const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
+                .replace(/=/g, '')
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_');
+            return { verifier, challenge };
+        }
+
+        // Login function
+        async function login() {
+            const state = generateRandomString(32);
+            const nonce = generateRandomString(32);
+            const { verifier, challenge } = await generatePKCEChallenge();
+            
+            // Store state and PKCE verifier in session storage
+            sessionStorage.setItem('oauth_state', state);
+            sessionStorage.setItem('oauth_nonce', nonce);
+            sessionStorage.setItem('pkce_verifier', verifier);
+            
+            // Build authorization URL
+            const authUrl = new URL(`${keycloakConfig.authServerUrl}realms/${keycloakConfig.realm}/protocol/openid-connect/auth`);
+            authUrl.searchParams.append('client_id', keycloakConfig.clientId);
+            authUrl.searchParams.append('redirect_uri', keycloakConfig.redirectUri);
+            authUrl.searchParams.append('response_type', keycloakConfig.responseType);
+            authUrl.searchParams.append('scope', keycloakConfig.scope);
+            authUrl.searchParams.append('state', state);
+            authUrl.searchParams.append('nonce', nonce);
+            authUrl.searchParams.append('code_challenge', challenge);
+            authUrl.searchParams.append('code_challenge_method', 'S256');
+            
+            // Skip Keycloak login page and go directly to Google
+            // authUrl.searchParams.append('kc_idp_hint', 'google');
+            
+            // Redirect to Keycloak (will auto-redirect to Google)
+            window.location.href = authUrl.toString();
+        }
+
+        // Logout function
+        function logout() {
+            const logoutUrl = new URL(`${keycloakConfig.authServerUrl}realms/${keycloakConfig.realm}/protocol/openid-connect/logout`);
+            logoutUrl.searchParams.append('client_id', keycloakConfig.clientId);
+            logoutUrl.searchParams.append('post_logout_redirect_uri', keycloakConfig.redirectUri);
+            
+            if (tokens.idToken) {
+                logoutUrl.searchParams.append('id_token_hint', tokens.idToken);
+            }
+            
+            // Clear tokens
+            tokens = {
+                accessToken: null,
+                idToken: null,
+                refreshToken: null
+            };
+            sessionStorage.clear();
+            
+            // Redirect to Keycloak logout
+            window.location.href = logoutUrl.toString();
+        }
+
+        // Exchange authorization code for tokens
+        async function exchangeCodeForTokens(code) {
+            const verifier = sessionStorage.getItem('pkce_verifier');
+            
+            const tokenUrl = `${keycloakConfig.authServerUrl}realms/${keycloakConfig.realm}/protocol/openid-connect/token`;
+            
+            const params = new URLSearchParams();
+            params.append('grant_type', 'authorization_code');
+            params.append('client_id', keycloakConfig.clientId);
+            params.append('code', code);
+            params.append('redirect_uri', keycloakConfig.redirectUri);
+            params.append('code_verifier', verifier);
+            
+            try {
+                const response = await fetch(tokenUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: params.toString()
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Token exchange failed: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Store tokens
+                tokens.accessToken = data.access_token;
+                tokens.idToken = data.id_token;
+                tokens.refreshToken = data.refresh_token;
+                
+                // Update UI
+                updateUI(true);
+                displayTokens();
+                
+                // Clean up session storage
+                sessionStorage.removeItem('oauth_state');
+                sessionStorage.removeItem('oauth_nonce');
+                sessionStorage.removeItem('pkce_verifier');
+                
+            } catch (error) {
+                console.error('Token exchange error:', error);
+                alert('Failed to exchange code for tokens: ' + error.message);
+            }
+        }
+
+        // Refresh token function
+        async function refreshToken() {
+            if (!tokens.refreshToken) {
+                alert('No refresh token available');
+                return;
+            }
+            
+            const tokenUrl = `${keycloakConfig.authServerUrl}realms/${keycloakConfig.realm}/protocol/openid-connect/token`;
+            
+            const params = new URLSearchParams();
+            params.append('grant_type', 'refresh_token');
+            params.append('client_id', keycloakConfig.clientId);
+            params.append('refresh_token', tokens.refreshToken);
+            
+            try {
+                const response = await fetch(tokenUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: params.toString()
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Token refresh failed: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Update tokens
+                tokens.accessToken = data.access_token;
+                tokens.idToken = data.id_token;
+                if (data.refresh_token) {
+                    tokens.refreshToken = data.refresh_token;
+                }
+                
+                displayTokens();
+                alert('Tokens refreshed successfully!');
+                
+            } catch (error) {
+                console.error('Token refresh error:', error);
+                alert('Failed to refresh token: ' + error.message);
+            }
+        }
+
+        // Get user info
+        async function getUserInfo() {
+            if (!tokens.accessToken) {
+                alert('No access token available');
+                return;
+            }
+            
+            const userInfoUrl = `${keycloakConfig.authServerUrl}realms/${keycloakConfig.realm}/protocol/openid-connect/userinfo`;
+            
+            try {
+                const response = await fetch(userInfoUrl, {
+                    headers: {
+                        'Authorization': `Bearer ${tokens.accessToken}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to get user info: ${response.statusText}`);
+                }
+                
+                const userInfo = await response.json();
+                
+                document.getElementById('userInfo').style.display = 'block';
+                document.getElementById('userInfoContent').textContent = JSON.stringify(userInfo, null, 2);
+                
+            } catch (error) {
+                console.error('User info error:', error);
+                alert('Failed to get user info: ' + error.message);
+            }
+        }
+
+        // Decode JWT token
+        function decodeJWT(token) {
+            try {
+                const parts = token.split('.');
+                if (parts.length !== 3) {
+                    throw new Error('Invalid JWT format');
+                }
+                
+                const payload = parts[1];
+                const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+                return JSON.parse(decoded);
+            } catch (error) {
+                console.error('Failed to decode JWT:', error);
+                return null;
+            }
+        }
+
+        // Display tokens
+        function displayTokens() {
+            if (tokens.accessToken) {
+                document.getElementById('tokens').style.display = 'block';
+                document.getElementById('accessToken').textContent = tokens.accessToken;
+                document.getElementById('idToken').textContent = tokens.idToken || 'No ID token';
+                
+                const decoded = decodeJWT(tokens.accessToken);
+                if (decoded) {
+                    document.getElementById('decodedToken').textContent = JSON.stringify(decoded, null, 2);
+                }
+            }
+        }
+
+        // Update UI based on authentication status
+        function updateUI(authenticated) {
+            const status = document.getElementById('status');
+            const loginBtn = document.getElementById('loginBtn');
+            const logoutBtn = document.getElementById('logoutBtn');
+            const refreshBtn = document.getElementById('refreshBtn');
+            const userInfoBtn = document.getElementById('userInfoBtn');
+            
+            if (authenticated) {
+                status.className = 'status authenticated';
+                status.textContent = 'Status: Authenticated';
+                loginBtn.disabled = true;
+                logoutBtn.disabled = false;
+                refreshBtn.disabled = false;
+                userInfoBtn.disabled = false;
+            } else {
+                status.className = 'status unauthenticated';
+                status.textContent = 'Status: Not authenticated';
+                loginBtn.disabled = false;
+                logoutBtn.disabled = true;
+                refreshBtn.disabled = true;
+                userInfoBtn.disabled = true;
+                document.getElementById('tokens').style.display = 'none';
+                document.getElementById('userInfo').style.display = 'none';
+            }
+        }
+
+        // Check for authorization code in URL on page load
+        window.addEventListener('load', async () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const state = urlParams.get('state');
+            const error = urlParams.get('error');
+            
+            if (error) {
+                alert(`Authentication error: ${error}`);
+                window.history.replaceState({}, document.title, window.location.pathname);
+                return;
+            }
+            
+            if (code && state) {
+                const savedState = sessionStorage.getItem('oauth_state');
+                
+                if (state !== savedState) {
+                    alert('State mismatch - possible CSRF attack');
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                    return;
+                }
+                
+                // Exchange code for tokens
+                await exchangeCodeForTokens(code);
+                
+                // Clean URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+        });
+    </script>
+</body>
+</html>
